@@ -18,7 +18,7 @@ const (
 	EPOLLPRI     = syscall.EPOLLPRI
 	EPOLLERR     = syscall.EPOLLERR
 	EPOLLHUP     = syscall.EPOLLHUP
-	EPOLLET      = syscall.EPOLLET
+	EPOLLET      = 1 << 31
 	EPOLLONESHOT = syscall.EPOLLONESHOT
 
 	// _EPOLLCLOSED is a special EpollEvent value the receipt of which means
