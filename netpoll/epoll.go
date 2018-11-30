@@ -185,6 +185,8 @@ func (ep *Epoll) Add(fd int, events EpollEvent, cb func(EpollEvent)) (err error)
 	}
 	ep.callbacks[fd] = cb
 
+	syscall.SetNonblock(fd, true)
+
 	return syscall.EpollCtl(ep.fd, syscall.EPOLL_CTL_ADD, fd, ev)
 }
 
