@@ -4,8 +4,7 @@ package netpoll
 
 import (
 	"sync"
-
-	"golang.org/x/sys/unix"
+	"syscall"
 )
 
 // EpollEvent represents epoll events configuration bit mask.
@@ -13,14 +12,14 @@ type EpollEvent uint32
 
 // EpollEvents that are mapped to epoll_event.events possible values.
 const (
-	EPOLLIN      = unix.EPOLLIN
-	EPOLLOUT     = unix.EPOLLOUT
-	EPOLLRDHUP   = unix.EPOLLRDHUP
-	EPOLLPRI     = unix.EPOLLPRI
-	EPOLLERR     = unix.EPOLLERR
-	EPOLLHUP     = unix.EPOLLHUP
-	EPOLLET      = unix.EPOLLET
-	EPOLLONESHOT = unix.EPOLLONESHOT
+	EPOLLIN      = syscall.EPOLLIN
+	EPOLLOUT     = syscall.EPOLLOUT
+	EPOLLRDHUP   = syscall.EPOLLRDHUP
+	EPOLLPRI     = syscall.EPOLLPRI
+	EPOLLERR     = syscall.EPOLLERR
+	EPOLLHUP     = syscall.EPOLLHUP
+	EPOLLET      = syscall.EPOLLET
+	EPOLLONESHOT = syscall.EPOLLONESHOT
 
 	// _EPOLLCLOSED is a special EpollEvent value the receipt of which means
 	// that the epoll instance is closed.
@@ -85,12 +84,12 @@ func (c *EpollConfig) withDefaults() (config EpollConfig) {
 func EpollCreate(c *EpollConfig) (*Epoll, error) {
 	config := c.withDefaults()
 
-	fd, err := unix.EpollCreate1(0)
+	fd, err := syscall.EpollCreate1(0)
 	if err != nil {
 		return nil, err
 	}
 
-	r0, _, errno := unix.Syscall(unix.SYS_EVENTFD2, 0, 0, 0)
+	r0, _, errno := syscall.Syscall(syscall.SYS_EVENTFD2, 0, 0, 0)
 	if errno != 0 {
 		return nil, errno
 	}
@@ -98,13 +97,13 @@ func EpollCreate(c *EpollConfig) (*Epoll, error) {
 
 	// Set finalizer for write end of socket pair to avoid data races when
 	// closing Epoll instance and EBADF errors on writing ctl bytes from callers.
-	err = unix.EpollCtl(fd, unix.EPOLL_CTL_ADD, eventFd, &unix.EpollEvent{
-		Events: unix.EPOLLIN,
+	err = syscall.EpollCtl(fd, syscall.EPOLL_CTL_ADD, eventFd, &syscall.EpollEvent{
+		Events: syscall.EPOLLIN,
 		Fd:     int32(eventFd),
 	})
 	if err != nil {
-		unix.Close(fd)
-		unix.Close(eventFd)
+		syscall.Close(fd)
+		syscall.Close(eventFd)
 		return nil, err
 	}
 
@@ -134,7 +133,7 @@ func (ep *Epoll) Close() (err error) {
 		}
 		ep.closed = true
 
-		if _, err = unix.Write(ep.eventFd, closeBytes); err != nil {
+		if _, err = syscall.Write(ep.eventFd, closeBytes); err != nil {
 			ep.mu.Unlock()
 			return
 		}
@@ -143,7 +142,7 @@ func (ep *Epoll) Close() (err error) {
 
 	<-ep.waitDone
 
-	if err = unix.Close(ep.eventFd); err != nil {
+	if err = syscall.Close(ep.eventFd); err != nil {
 		return
 	}
 
@@ -170,7 +169,7 @@ func (ep *Epoll) Close() (err error) {
 // Callback will be called on each received event from epoll.
 // Note that _EPOLLCLOSED is triggered for every cb when epoll closed.
 func (ep *Epoll) Add(fd int, events EpollEvent, cb func(EpollEvent)) (err error) {
-	ev := &unix.EpollEvent{
+	ev := &syscall.EpollEvent{
 		Events: uint32(events),
 		Fd:     int32(fd),
 	}
@@ -186,7 +185,7 @@ func (ep *Epoll) Add(fd int, events EpollEvent, cb func(EpollEvent)) (err error)
 	}
 	ep.callbacks[fd] = cb
 
-	return unix.EpollCtl(ep.fd, unix.EPOLL_CTL_ADD, fd, ev)
+	return syscall.EpollCtl(ep.fd, syscall.EPOLL_CTL_ADD, fd, ev)
 }
 
 // Del removes fd from epoll set.
@@ -203,12 +202,12 @@ func (ep *Epoll) Del(fd int) (err error) {
 
 	delete(ep.callbacks, fd)
 
-	return unix.EpollCtl(ep.fd, unix.EPOLL_CTL_DEL, fd, nil)
+	return syscall.EpollCtl(ep.fd, syscall.EPOLL_CTL_DEL, fd, nil)
 }
 
 // Mod sets to listen events on fd.
 func (ep *Epoll) Mod(fd int, events EpollEvent) (err error) {
-	ev := &unix.EpollEvent{
+	ev := &syscall.EpollEvent{
 		Events: uint32(events),
 		Fd:     int32(fd),
 	}
@@ -223,7 +222,7 @@ func (ep *Epoll) Mod(fd int, events EpollEvent) (err error) {
 		return ErrNotRegistered
 	}
 
-	return unix.EpollCtl(ep.fd, unix.EPOLL_CTL_MOD, fd, ev)
+	return syscall.EpollCtl(ep.fd, syscall.EPOLL_CTL_MOD, fd, ev)
 }
 
 const (
@@ -233,17 +232,17 @@ const (
 
 func (ep *Epoll) wait(onError func(error)) {
 	defer func() {
-		if err := unix.Close(ep.fd); err != nil {
+		if err := syscall.Close(ep.fd); err != nil {
 			onError(err)
 		}
 		close(ep.waitDone)
 	}()
 
-	events := make([]unix.EpollEvent, maxWaitEventsBegin)
+	events := make([]syscall.EpollEvent, maxWaitEventsBegin)
 	callbacks := make([]func(EpollEvent), 0, maxWaitEventsBegin)
 
 	for {
-		n, err := unix.EpollWait(ep.fd, events, -1)
+		n, err := syscall.EpollWait(ep.fd, events, -1)
 		if err != nil {
 			if temporaryErr(err) {
 				continue
@@ -273,7 +272,7 @@ func (ep *Epoll) wait(onError func(error)) {
 		}
 
 		if n == len(events) && n*2 <= maxWaitEventsStop {
-			events = make([]unix.EpollEvent, n*2)
+			events = make([]syscall.EpollEvent, n*2)
 			callbacks = make([]func(EpollEvent), 0, n*2)
 		}
 	}
