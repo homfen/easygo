@@ -334,11 +334,12 @@ func (k *Kqueue) Del(fd int) error {
 	return nil
 }
 
+const (
+	maxWaitEventsBegin = 1 << 10 // 1024
+	maxWaitEventsStop  = 1 << 15 // 32768
+)
+
 func (k *Kqueue) wait(onError func(error)) {
-	const (
-		maxWaitEventsBegin = 1 << 10 // 1024
-		maxWaitEventsStop  = 1 << 15 // 32768
-	)
 
 	defer func() {
 		if err := unix.Close(k.fd); err != nil {
@@ -347,10 +348,9 @@ func (k *Kqueue) wait(onError func(error)) {
 		close(k.done)
 	}()
 
-	evs := make([]unix.Kevent_t, maxWaitEventsBegin)
-	cbs := make([]KeventHandler, maxWaitEventsBegin)
-
 	for {
+		evs := make([]unix.Kevent_t, maxWaitEventsBegin)
+
 		n, err := unix.Kevent(k.fd, nil, evs, nil)
 		if err != nil {
 			if temporaryErr(err) {
@@ -360,34 +360,19 @@ func (k *Kqueue) wait(onError func(error)) {
 			return
 		}
 
-		cbs = cbs[:n]
-		k.mu.RLock()
 		for i := 0; i < n; i++ {
 			fd := int(evs[i].Ident)
 			if fd == -1 { //todo
-				k.mu.RUnlock()
 				return
 			}
-			cbs[i] = k.cb[fd]
-		}
-		k.mu.RUnlock()
-
-		for i, cb := range cbs {
-			if cb != nil {
-				e := evs[i]
-				cb(Kevent{
-					Filter: KeventFilter(e.Filter),
-					Flags:  KeventFlag(e.Flags),
-					Data:   e.Data,
-					Fflags: e.Fflags,
-				})
-				cbs[i] = nil
-			}
-		}
-
-		if n == len(evs) && n*2 <= maxWaitEventsStop {
-			evs = make([]unix.Kevent_t, n*2)
-			cbs = make([]KeventHandler, n*2)
+			cb = k.cb[fd]
+			e := evs[i]
+			go cb(Kevent{
+				Filter: KeventFilter(e.Filter),
+				Flags:  KeventFlag(e.Flags),
+				Data:   e.Data,
+				Fflags: e.Fflags,
+			})
 		}
 	}
 }
