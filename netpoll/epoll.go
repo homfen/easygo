@@ -229,7 +229,6 @@ func (ep *Epoll) Mod(fd int, events EpollEvent) (err error) {
 
 const (
 	maxWaitEventsBegin = 1024
-	maxWaitEventsStop  = 32768
 )
 
 func (ep *Epoll) wait(onError func(error)) {
@@ -240,10 +239,9 @@ func (ep *Epoll) wait(onError func(error)) {
 		close(ep.waitDone)
 	}()
 
-	events := make([]syscall.EpollEvent, maxWaitEventsBegin)
-	callbacks := make([]func(EpollEvent), 0, maxWaitEventsBegin)
-
 	for {
+		events := make([]syscall.EpollEvent, maxWaitEventsBegin)
+
 		n, err := syscall.EpollWait(ep.fd, events, -1)
 		if err != nil {
 			if temporaryErr(err) {
@@ -253,29 +251,13 @@ func (ep *Epoll) wait(onError func(error)) {
 			return
 		}
 
-		callbacks = callbacks[:n]
-
-		ep.mu.RLock()
 		for i := 0; i < n; i++ {
 			fd := int(events[i].Fd)
 			if fd == ep.eventFd { // signal to close
-				ep.mu.RUnlock()
 				return
 			}
-			callbacks[i] = ep.callbacks[fd]
-		}
-		ep.mu.RUnlock()
-
-		for i := 0; i < n; i++ {
-			if cb := callbacks[i]; cb != nil {
-				cb(EpollEvent(events[i].Events))
-				callbacks[i] = nil
-			}
-		}
-
-		if n == len(events) && n*2 <= maxWaitEventsStop {
-			events = make([]syscall.EpollEvent, n*2)
-			callbacks = make([]func(EpollEvent), 0, n*2)
+			cb := ep.callbacks[fd]
+			go cb(EpollEvent(events[i].Events))
 		}
 	}
 }
