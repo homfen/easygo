@@ -174,16 +174,16 @@ func (ep *Epoll) Add(fd int, events EpollEvent, cb func(EpollEvent)) (err error)
 		Fd:     int32(fd),
 	}
 
-	ep.mu.Lock()
-	defer ep.mu.Unlock()
-
 	if ep.closed {
 		return ErrClosed
 	}
+	ep.mu.Lock()
 	if _, has := ep.callbacks[fd]; has {
+		ep.mu.Unlock()
 		return ErrRegistered
 	}
 	ep.callbacks[fd] = cb
+	ep.mu.Unlock()
 
 	syscall.SetNonblock(fd, true)
 
@@ -192,17 +192,18 @@ func (ep *Epoll) Add(fd int, events EpollEvent, cb func(EpollEvent)) (err error)
 
 // Del removes fd from epoll set.
 func (ep *Epoll) Del(fd int) (err error) {
-	ep.mu.Lock()
-	defer ep.mu.Unlock()
 
 	if ep.closed {
 		return ErrClosed
 	}
+	ep.mu.Lock()
 	if _, ok := ep.callbacks[fd]; !ok {
+		ep.mu.Unlock()
 		return ErrNotRegistered
 	}
 
 	delete(ep.callbacks, fd)
+	ep.mu.Unlock()
 
 	return syscall.EpollCtl(ep.fd, syscall.EPOLL_CTL_DEL, fd, nil)
 }
@@ -214,21 +215,22 @@ func (ep *Epoll) Mod(fd int, events EpollEvent) (err error) {
 		Fd:     int32(fd),
 	}
 
-	ep.mu.RLock()
-	defer ep.mu.RUnlock()
-
 	if ep.closed {
 		return ErrClosed
 	}
+	ep.mu.RLock()
 	if _, ok := ep.callbacks[fd]; !ok {
+		ep.mu.RUnlock()
 		return ErrNotRegistered
 	}
+	ep.mu.RUnlock()
 
 	return syscall.EpollCtl(ep.fd, syscall.EPOLL_CTL_MOD, fd, ev)
 }
 
 const (
 	maxWaitEventsBegin = 1024
+	maxWaitEventsStop  = 32768
 )
 
 func (ep *Epoll) wait(onError func(error)) {
@@ -239,9 +241,8 @@ func (ep *Epoll) wait(onError func(error)) {
 		close(ep.waitDone)
 	}()
 
+	events := make([]syscall.EpollEvent, maxWaitEventsBegin)
 	for {
-		events := make([]syscall.EpollEvent, maxWaitEventsBegin)
-
 		n, err := syscall.EpollWait(ep.fd, events, -1)
 		if err != nil {
 			if temporaryErr(err) {
@@ -258,6 +259,13 @@ func (ep *Epoll) wait(onError func(error)) {
 			}
 			cb := ep.callbacks[fd]
 			go cb(EpollEvent(events[i].Events))
+		}
+
+		doubleN := n * 2
+		if n >= maxWaitEventsBegin && doubleN < maxWaitEventsStop {
+			events = make([]unix.EpollEvent, doubleN)
+		} else {
+			events = make([]unix.EpollEvent, n)
 		}
 	}
 }

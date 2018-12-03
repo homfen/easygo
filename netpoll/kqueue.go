@@ -270,16 +270,16 @@ func (k *Kqueue) Add(fd int, events Kevents, n int, cb KeventHandler) error {
 	}
 	changes := *(*[]unix.Kevent_t)(unsafe.Pointer(hdr))
 
-	k.mu.Lock()
-	defer k.mu.Unlock()
-
 	if k.closed {
 		return ErrClosed
 	}
+	k.mu.Lock()
 	if _, has := k.cb[fd]; has {
+		k.mu.Unlock()
 		return ErrRegistered
 	}
 	k.cb[fd] = cb
+	k.mu.Unlock()
 
 	_, err := unix.Kevent(k.fd, changes, nil, nil)
 
@@ -301,15 +301,15 @@ func (k *Kqueue) Mod(fd int, events Kevents, n int) error {
 	}
 	changes := *(*[]unix.Kevent_t)(unsafe.Pointer(hdr))
 
-	k.mu.RLock()
-	defer k.mu.RUnlock()
-
 	if k.closed {
 		return ErrClosed
 	}
+	k.mu.RLock()
 	if _, has := k.cb[fd]; !has {
+		k.mu.RUnlock()
 		return ErrNotRegistered
 	}
+	k.mu.RUnlock()
 
 	_, err := unix.Kevent(k.fd, changes, nil, nil)
 
@@ -319,17 +319,18 @@ func (k *Kqueue) Mod(fd int, events Kevents, n int) error {
 // Del removes callback for fd. Note that it does not cleanups events for fd in
 // kqueue. You should close fd or call Mod() with EV_DELETE flag set.
 func (k *Kqueue) Del(fd int) error {
-	k.mu.Lock()
-	defer k.mu.Unlock()
 
 	if k.closed {
 		return ErrClosed
 	}
+	k.mu.Lock()
 	if _, has := k.cb[fd]; !has {
+		k.mu.Unlock()
 		return ErrNotRegistered
 	}
 
 	delete(k.cb, fd)
+	k.mu.Unlock()
 
 	return nil
 }
@@ -348,9 +349,8 @@ func (k *Kqueue) wait(onError func(error)) {
 		close(k.done)
 	}()
 
+	evs := make([]unix.Kevent_t, maxWaitEventsBegin)
 	for {
-		evs := make([]unix.Kevent_t, maxWaitEventsBegin)
-
 		n, err := unix.Kevent(k.fd, nil, evs, nil)
 		if err != nil {
 			if temporaryErr(err) {
@@ -373,6 +373,13 @@ func (k *Kqueue) wait(onError func(error)) {
 				Data:   e.Data,
 				Fflags: e.Fflags,
 			})
+		}
+
+		doubleN := n * 2
+		if n >= maxWaitEventsBegin && doubleN < maxWaitEventsStop {
+			evs = make([]unix.Kevent_t, doubleN)
+		} else {
+			evs = make([]unix.Kevent_t, n)
 		}
 	}
 }
