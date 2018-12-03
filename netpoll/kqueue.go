@@ -220,7 +220,10 @@ func (c *KqueueConfig) withDefaults() (config KqueueConfig) {
 
 // Kqueue represents kqueue instance.
 type Kqueue struct {
-	mu     sync.RWMutex
+	muAdd sync.RWMutex
+	muMod sync.RWMutex
+	muDel sync.RWMutex
+
 	fd     int
 	cb     map[int]KeventHandler
 	done   chan struct{}
@@ -273,13 +276,13 @@ func (k *Kqueue) Add(fd int, events Kevents, n int, cb KeventHandler) error {
 	if k.closed {
 		return ErrClosed
 	}
-	k.mu.Lock()
+	k.muAdd.Lock()
 	if _, has := k.cb[fd]; has {
 		k.mu.Unlock()
 		return ErrRegistered
 	}
 	k.cb[fd] = cb
-	k.mu.Unlock()
+	k.muAdd.Unlock()
 
 	_, err := unix.Kevent(k.fd, changes, nil, nil)
 
@@ -304,12 +307,12 @@ func (k *Kqueue) Mod(fd int, events Kevents, n int) error {
 	if k.closed {
 		return ErrClosed
 	}
-	k.mu.RLock()
+	k.muMod.RLock()
 	if _, has := k.cb[fd]; !has {
-		k.mu.RUnlock()
+		k.muMod.RUnlock()
 		return ErrNotRegistered
 	}
-	k.mu.RUnlock()
+	k.muMod.RUnlock()
 
 	_, err := unix.Kevent(k.fd, changes, nil, nil)
 
@@ -323,14 +326,14 @@ func (k *Kqueue) Del(fd int) error {
 	if k.closed {
 		return ErrClosed
 	}
-	k.mu.Lock()
+	k.muDel.Lock()
 	if _, has := k.cb[fd]; !has {
-		k.mu.Unlock()
+		k.muDel.Unlock()
 		return ErrNotRegistered
 	}
 
 	delete(k.cb, fd)
-	k.mu.Unlock()
+	k.muDel.Unlock()
 
 	return nil
 }
@@ -349,8 +352,8 @@ func (k *Kqueue) wait(onError func(error)) {
 		close(k.done)
 	}()
 
-	evs := make([]unix.Kevent_t, maxWaitEventsBegin)
 	for {
+		evs := make([]unix.Kevent_t, maxWaitEventsBegin)
 		n, err := unix.Kevent(k.fd, nil, evs, nil)
 		if err != nil {
 			if temporaryErr(err) {
@@ -367,7 +370,7 @@ func (k *Kqueue) wait(onError func(error)) {
 			}
 			cb := k.cb[fd]
 			e := evs[i]
-			go cb(Kevent{
+			cb(Kevent{
 				Filter: KeventFilter(e.Filter),
 				Flags:  KeventFlag(e.Flags),
 				Data:   e.Data,
@@ -375,12 +378,12 @@ func (k *Kqueue) wait(onError func(error)) {
 			})
 		}
 
-		doubleN := n * 2
-		if n >= maxWaitEventsBegin && doubleN < maxWaitEventsStop {
-			evs = make([]unix.Kevent_t, doubleN)
-		} else {
-			evs = make([]unix.Kevent_t, n)
-		}
+		//doubleN := n * 2
+		//if n >= maxWaitEventsBegin && doubleN < maxWaitEventsStop {
+		//evs = make([]unix.Kevent_t, doubleN)
+		//} else {
+		//evs = make([]unix.Kevent_t, n)
+		//}
 	}
 }
 

@@ -53,7 +53,10 @@ func (evt EpollEvent) String() (str string) {
 
 // Epoll represents single epoll instance.
 type Epoll struct {
-	mu sync.RWMutex
+	muAdd   sync.RWMutex
+	muMod   sync.RWMutex
+	muDel   sync.RWMutex
+	muClose sync.RWMutex
 
 	fd       int
 	eventFd  int
@@ -125,20 +128,20 @@ var closeBytes = []byte{1, 0, 0, 0, 0, 0, 0, 0}
 
 // Close stops wait loop and closes all underlying resources.
 func (ep *Epoll) Close() (err error) {
-	ep.mu.Lock()
+	ep.muClose.Lock()
 	{
 		if ep.closed {
-			ep.mu.Unlock()
+			ep.muClose.Unlock()
 			return ErrClosed
 		}
 		ep.closed = true
 
 		if _, err = syscall.Write(ep.eventFd, closeBytes); err != nil {
-			ep.mu.Unlock()
+			ep.muClose.Unlock()
 			return
 		}
 	}
-	ep.mu.Unlock()
+	ep.muClose.Unlock()
 
 	<-ep.waitDone
 
@@ -146,7 +149,7 @@ func (ep *Epoll) Close() (err error) {
 		return
 	}
 
-	ep.mu.Lock()
+	ep.muClose.Lock()
 	// Set callbacks to nil preventing long mu.Lock() hold.
 	// This could increase the speed of retreiving ErrClosed in other calls to
 	// current epoll instance.
@@ -154,7 +157,7 @@ func (ep *Epoll) Close() (err error) {
 	// closed flag is true.
 	callbacks := ep.callbacks
 	ep.callbacks = nil
-	ep.mu.Unlock()
+	ep.muClose.Unlock()
 
 	for _, cb := range callbacks {
 		if cb != nil {
@@ -177,15 +180,13 @@ func (ep *Epoll) Add(fd int, events EpollEvent, cb func(EpollEvent)) (err error)
 	if ep.closed {
 		return ErrClosed
 	}
-	ep.mu.Lock()
-	if _, has := ep.callbacks[fd]; has {
-		ep.mu.Unlock()
-		return ErrRegistered
+	ep.muAdd.Lock()
+	if _, has := ep.callbacks[fd]; !has {
+		ep.callbacks[fd] = cb
 	}
-	ep.callbacks[fd] = cb
-	ep.mu.Unlock()
+	ep.muAdd.Unlock()
 
-	syscall.SetNonblock(fd, true)
+	//syscall.SetNonblock(fd, true)
 
 	return syscall.EpollCtl(ep.fd, syscall.EPOLL_CTL_ADD, fd, ev)
 }
@@ -196,14 +197,14 @@ func (ep *Epoll) Del(fd int) (err error) {
 	if ep.closed {
 		return ErrClosed
 	}
-	ep.mu.Lock()
+	ep.muDel.Lock()
 	if _, ok := ep.callbacks[fd]; !ok {
-		ep.mu.Unlock()
+		ep.muDel.Unlock()
 		return ErrNotRegistered
 	}
 
 	delete(ep.callbacks, fd)
-	ep.mu.Unlock()
+	ep.muDel.Unlock()
 
 	return syscall.EpollCtl(ep.fd, syscall.EPOLL_CTL_DEL, fd, nil)
 }
@@ -218,12 +219,12 @@ func (ep *Epoll) Mod(fd int, events EpollEvent) (err error) {
 	if ep.closed {
 		return ErrClosed
 	}
-	ep.mu.RLock()
+	ep.muMod.RLock()
 	if _, ok := ep.callbacks[fd]; !ok {
-		ep.mu.RUnlock()
+		ep.muMod.RUnlock()
 		return ErrNotRegistered
 	}
-	ep.mu.RUnlock()
+	ep.muMod.RUnlock()
 
 	return syscall.EpollCtl(ep.fd, syscall.EPOLL_CTL_MOD, fd, ev)
 }
@@ -241,8 +242,8 @@ func (ep *Epoll) wait(onError func(error)) {
 		close(ep.waitDone)
 	}()
 
-	events := make([]syscall.EpollEvent, maxWaitEventsBegin)
 	for {
+		events := make([]syscall.EpollEvent, maxWaitEventsBegin)
 		n, err := syscall.EpollWait(ep.fd, events, -1)
 		if err != nil {
 			if temporaryErr(err) {
@@ -258,14 +259,14 @@ func (ep *Epoll) wait(onError func(error)) {
 				return
 			}
 			cb := ep.callbacks[fd]
-			go cb(EpollEvent(events[i].Events))
+			cb(EpollEvent(events[i].Events))
 		}
 
-		doubleN := n * 2
-		if n >= maxWaitEventsBegin && doubleN < maxWaitEventsStop {
-			events = make([]syscall.EpollEvent, doubleN)
-		} else {
-			events = make([]syscall.EpollEvent, n)
-		}
+		//doubleN := n * 2
+		//if n >= maxWaitEventsBegin && doubleN < maxWaitEventsStop {
+		//events = make([]syscall.EpollEvent, doubleN)
+		//} else {
+		//events = make([]syscall.EpollEvent, n)
+		//}
 	}
 }
