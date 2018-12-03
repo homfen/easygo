@@ -365,7 +365,7 @@ func (k *Kqueue) wait(onError func(error)) {
 			if fd == -1 { //todo
 				return
 			}
-			cb = k.cb[fd]
+			cb := k.cb[fd]
 			e := evs[i]
 			go cb(Kevent{
 				Filter: KeventFilter(e.Filter),
