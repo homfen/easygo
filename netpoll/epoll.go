@@ -263,9 +263,9 @@ func (ep *Epoll) wait(onError func(error)) {
 
 		doubleN := n * 2
 		if n >= maxWaitEventsBegin && doubleN < maxWaitEventsStop {
-			events = make([]unix.EpollEvent, doubleN)
+			events = make([]syscall.EpollEvent, doubleN)
 		} else {
-			events = make([]unix.EpollEvent, n)
+			events = make([]syscall.EpollEvent, n)
 		}
 	}
 }
