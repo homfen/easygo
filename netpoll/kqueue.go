@@ -220,7 +220,10 @@ func (c *KqueueConfig) withDefaults() (config KqueueConfig) {
 
 // Kqueue represents kqueue instance.
 type Kqueue struct {
-	mu     sync.RWMutex
+	muAdd sync.RWMutex
+	muMod sync.RWMutex
+	muDel sync.RWMutex
+
 	fd     int
 	cb     map[int]KeventHandler
 	done   chan struct{}
@@ -270,16 +273,14 @@ func (k *Kqueue) Add(fd int, events Kevents, n int, cb KeventHandler) error {
 	}
 	changes := *(*[]unix.Kevent_t)(unsafe.Pointer(hdr))
 
-	k.mu.Lock()
-	defer k.mu.Unlock()
-
 	if k.closed {
 		return ErrClosed
 	}
-	if _, has := k.cb[fd]; has {
-		return ErrRegistered
+	k.muAdd.Lock()
+	if _, has := k.cb[fd]; !has {
+		k.cb[fd] = cb
 	}
-	k.cb[fd] = cb
+	k.muAdd.Unlock()
 
 	_, err := unix.Kevent(k.fd, changes, nil, nil)
 
@@ -301,15 +302,15 @@ func (k *Kqueue) Mod(fd int, events Kevents, n int) error {
 	}
 	changes := *(*[]unix.Kevent_t)(unsafe.Pointer(hdr))
 
-	k.mu.RLock()
-	defer k.mu.RUnlock()
-
 	if k.closed {
 		return ErrClosed
 	}
+	k.muMod.RLock()
 	if _, has := k.cb[fd]; !has {
+		k.muMod.RUnlock()
 		return ErrNotRegistered
 	}
+	k.muMod.RUnlock()
 
 	_, err := unix.Kevent(k.fd, changes, nil, nil)
 
@@ -319,17 +320,18 @@ func (k *Kqueue) Mod(fd int, events Kevents, n int) error {
 // Del removes callback for fd. Note that it does not cleanups events for fd in
 // kqueue. You should close fd or call Mod() with EV_DELETE flag set.
 func (k *Kqueue) Del(fd int) error {
-	k.mu.Lock()
-	defer k.mu.Unlock()
 
 	if k.closed {
 		return ErrClosed
 	}
+	k.muDel.Lock()
 	if _, has := k.cb[fd]; !has {
+		k.muDel.Unlock()
 		return ErrNotRegistered
 	}
 
 	delete(k.cb, fd)
+	k.muDel.Unlock()
 
 	return nil
 }
@@ -348,9 +350,8 @@ func (k *Kqueue) wait(onError func(error)) {
 		close(k.done)
 	}()
 
+	evs := make([]unix.Kevent_t, maxWaitEventsBegin)
 	for {
-		evs := make([]unix.Kevent_t, maxWaitEventsBegin)
-
 		n, err := unix.Kevent(k.fd, nil, evs, nil)
 		if err != nil {
 			if temporaryErr(err) {
@@ -367,12 +368,19 @@ func (k *Kqueue) wait(onError func(error)) {
 			}
 			cb := k.cb[fd]
 			e := evs[i]
-			go cb(Kevent{
+			cb(Kevent{
 				Filter: KeventFilter(e.Filter),
 				Flags:  KeventFlag(e.Flags),
 				Data:   e.Data,
 				Fflags: e.Fflags,
 			})
+		}
+
+		doubleN := n * 2
+		if n >= maxWaitEventsBegin && doubleN < maxWaitEventsStop {
+			evs = make([]unix.Kevent_t, doubleN)
+		} else {
+			evs = make([]unix.Kevent_t, n)
 		}
 	}
 }
