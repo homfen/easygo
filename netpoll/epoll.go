@@ -268,5 +268,6 @@ func (ep *Epoll) wait(onError func(error)) {
 		} else {
 			events = make([]syscall.EpollEvent, n)
 		}
+
 	}
 }
